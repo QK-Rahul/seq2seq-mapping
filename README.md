@@ -4,6 +4,7 @@
 
 * This example includes -
     * multiple LSTM layered encoder-decoder
+    * dropout between stacked LSTM layers
     * input sequences can be of any length
         * I'm not aware of effects of arbitrary length sequences during training for real world tasks
         * inside a batch, all the sequences should be of the same length or you'll get an exception

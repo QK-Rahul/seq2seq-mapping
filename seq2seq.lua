@@ -4,6 +4,7 @@
 
 -- This example includes -
     -- multiple LSTM layered encoder-decoder
+    -- dropout between stacked LSTM layers
     -- input sequences can be of any length
         -- I'm not aware of effects of arbitrary length sequences during training for real world tasks
         -- inside a batch, all the sequences should be of the same length or you'll get an exception
@@ -39,12 +40,12 @@ cmd:option('-synthetic', 2, 'pass 1 to use synthetic data for task1: ab -> aabb,
 -- model params
 cmd:option('-hiddenSize', 128, 'size of LSTM internal state')
 cmd:option('-num_layers', 3, 'number of layers in the LSTM')
---cmd:option('-model', 'lstm', 'lstm,gru or rnn')     -- TODO: give option to choose b/w LSTM and fastLSTM, unused as of now.
 -- optimization
 cmd:option('-learningRate',0.01,'learning rate')
 cmd:option('-learning_rate_decay',0.97,'learning rate decay')
 cmd:option('-learning_rate_decay_after',10,'in number of epochs, when to start decaying the learning rate')
 cmd:option('-decay_rate',0.95,'decay rate for rmsprop')
+cmd:option('-dropout',0.5,'dropout for regularization, used after each RNN hidden layer. 0 = no dropout')
 
 cmd:option('-batch_size',2,'number of sequences to train on in parallel')
 cmd:option('-max_epochs',1000,'number of full passes through the training data')
@@ -153,7 +154,10 @@ else
     local anLSTM 
     for i = 1, opt.num_layers do
         if i == 1 then anLSTM = nn.LSTM(opt.vocabSize, opt.hiddenSize)
-        else anLSTM = nn.LSTM(opt.hiddenSize, opt.hiddenSize) end
+        else
+            anLSTM = nn.LSTM(opt.hiddenSize, opt.hiddenSize)
+            if opt.dropout > 0 then enc:add(nn.Sequencer(nn.Dropout(opt.dropout))) end
+        end
         enc:add(nn.Sequencer(anLSTM))
         allModContainer:add(anLSTM)
     end
@@ -167,7 +171,10 @@ else
 
     for i = 1, opt.num_layers do
         if i == 1 then anLSTM = nn.LSTM(opt.vocabSize, opt.hiddenSize); decLSTM = anLSTM        -- the first LSTM in decoder LSTM stack
-        else anLSTM = nn.LSTM(opt.hiddenSize, opt.hiddenSize) end
+        else
+            anLSTM = nn.LSTM(opt.hiddenSize, opt.hiddenSize)
+            if opt.dropout > 0 then dec:add(nn.Sequencer(nn.Dropout(opt.dropout))) end
+        end
         allModContainer:add(anLSTM)
         dec:add(nn.Sequencer(anLSTM))
     end
@@ -178,8 +185,11 @@ else
     dec:add(nn.Sequencer(nn.LogSoftMax()))
 
     criterion = nn.SequencerCriterion(nn.ClassNLLCriterion())
-
 end
+
+print ('encoder', enc)
+print ('decoder', dec)
+
 -- run on gpu if possible
 if opt.gpuid >=0 then
 	enc:cuda()
