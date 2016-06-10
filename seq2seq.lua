@@ -39,7 +39,7 @@ cmd:text('Options')
 cmd:option('-synthetic', 2, 'pass 1 to use synthetic data for task1: ab -> aabb, 2 for task2: ab -> abc')
 -- model params
 cmd:option('-hiddenSize', 128, 'size of LSTM internal state')
-cmd:option('-num_layers', 3, 'number of layers in the LSTM')
+cmd:option('-num_layers', 2, 'number of layers in the LSTM')
 -- optimization
 cmd:option('-learningRate',0.01,'learning rate')
 cmd:option('-learning_rate_decay',0.97,'learning rate decay')
@@ -47,8 +47,8 @@ cmd:option('-learning_rate_decay_after',10,'in number of epochs, when to start d
 cmd:option('-decay_rate',0.95,'decay rate for rmsprop')
 cmd:option('-dropout',0.5,'dropout for regularization, used after each RNN hidden layer. 0 = no dropout')
 
-cmd:option('-batch_size',2,'number of sequences to train on in parallel')
-cmd:option('-max_epochs',1000,'number of full passes through the training data')
+cmd:option('-batch_size',20,'number of sequences to train on in parallel')
+cmd:option('-max_epochs',10,'number of full passes through the training data')
 cmd:option('-grad_clip',5,'clip gradients at this value, pass 0 to disable')
 cmd:option('-train_frac',0.90,'fraction of data that goes into train set')
 cmd:option('-val_frac',0.10,'fraction of data that goes into validation set')
@@ -56,8 +56,8 @@ cmd:option('-val_frac',0.10,'fraction of data that goes into validation set')
 cmd:option('-init_from', '', 'initialize network parameters from checkpoint at this path')
 -- bookkeeping
 cmd:option('-seed',16,'torch manual random number generator seed')
-cmd:option('-print_every',1,'how many steps/minibatches between printing out the loss')
-cmd:option('-eval_val_every',20,'every how many iterations should we evaluate on validation data?')
+cmd:option('-print_every',10,'how many steps/minibatches between printing out the loss')
+cmd:option('-eval_val_every',500,'every how many iterations should we evaluate on validation data?')
 cmd:option('-checkpoint_dir', 'checkpoints', 'output directory where checkpoints get written')
 cmd:option('-savefile','model_','filename to autosave the checkpont to. Will be inside checkpoint_dir/')
 cmd:option('-accurate_gpu_timing',0,'set this flag to 1 to get precise timings when using GPU. Might make code bit slower but reports accurate timings.')
@@ -97,7 +97,7 @@ local loader
 if opt.synthetic > 0 then
     print ('Using synthetic data ...')
     local Synthetic = require 'SyntheticData'
-    loader = Synthetic.create(opt.synthetic, 1000, opt.batch_size, unpack(split_fractions))
+    loader = Synthetic.create(opt.synthetic, 9000, opt.batch_size, unpack(split_fractions))
 -- else
 --    or load your own data here
 end    
@@ -112,19 +112,27 @@ print('vocab size:', loader.vocab_size)
 
 -- helper functions to for encoder-decoder coupling.
 --[[ Forward coupling: Copy encoder cell and output to decoder LSTM ]]--
-local function forwardConnect(encLSTM, decLSTM)
-   seqLen = #encLSTM.outputs
-   decLSTM.userPrevOutput = nn.rnn.recursiveCopy(decLSTM.userPrevOutput, encLSTM.outputs[seqLen])
-   decLSTM.userPrevCell = nn.rnn.recursiveCopy(decLSTM.userPrevCell, encLSTM.cells[seqLen])
+local function forwardConnect(encLSTMs, decLSTMs)
+    seqLen = #(encLSTMs[1].outputs)
+    for i = 1, #encLSTMs do
+        local encLSTM, decLSTM = encLSTMs[i], decLSTMs[i]
+        decLSTM.userPrevOutput = nn.rnn.recursiveCopy(decLSTM.userPrevOutput, encLSTM.outputs[seqLen])
+        decLSTM.userPrevCell = nn.rnn.recursiveCopy(decLSTM.userPrevCell, encLSTM.cells[seqLen])
+    end
 end
 
 --[[ Backward coupling: Copy decoder gradients to encoder LSTM ]]--
-local function backwardConnect(encLSTM, decLSTM)
-   encLSTM.userNextGradCell = nn.rnn.recursiveCopy(encLSTM.userNextGradCell, decLSTM.userGradPrevCell)
-   encLSTM.gradPrevOutput = nn.rnn.recursiveCopy(encLSTM.gradPrevOutput, decLSTM.userGradPrevOutput)
+local function backwardConnect(encLSTMs, decLSTMs)
+    for i = 1, #encLSTMs do
+        local encLSTM, decLSTM = encLSTMs[i], decLSTMs[i]
+        encLSTM.userNextGradCell = nn.rnn.recursiveCopy(encLSTM.userNextGradCell, decLSTM.userGradPrevCell)
+        encLSTM.gradPrevOutput = nn.rnn.recursiveCopy(encLSTM.gradPrevOutput, decLSTM.userGradPrevOutput)
+    end
 end
 
-local enc, dec, linear, encLSTM, decLSTM, criterion
+local enc, dec, criterion
+local encLSTMs = {}
+local decLSTMs = {}
 
 -- Hack to get all trainable parameters of our model in one flattend tensor (required for optim package)
 local allModContainer
@@ -135,9 +143,9 @@ if opt.init_from ~= '' then
         checkpoint = torch.load(opt.init_from)
 
         enc = checkpoint.enc
-        encLSTM = checkpoint.encLSTM
+        encLSTMs = checkpoint.encLSTMs
         dec = checkpoint.dec
-        decLSTM = checkpoint.decLSTM
+        decLSTMs = checkpoint.decLSTMs
         criterion = checkpoint.criterion
         allModContainer = checkpoint.allModContainer
         opt.learningRate = checkpoint.opt.learningRate
@@ -160,14 +168,14 @@ else
         end
         enc:add(nn.Sequencer(anLSTM))
         allModContainer:add(anLSTM)
+        table.insert(encLSTMs, anLSTM)
     end
-    encLSTM = anLSTM          -- the last LSTM in encoder LSTM stack whose output will be used to seed decoder
     enc:add(nn.SelectTable(-1))
 
     -- Decoder
     dec = nn.Sequential()
     dec:add(nn.OneHot(opt.vocabSize))      -- requires dpnn module from element-research
-    dec:add(nn.SplitTable(1, 2)) -- works for both online and mini-batch mode
+    dec:add(nn.SplitTable(1, 2))           -- works for both online and mini-batch mode
 
     for i = 1, opt.num_layers do
         if i == 1 then anLSTM = nn.LSTM(opt.vocabSize, opt.hiddenSize); decLSTM = anLSTM        -- the first LSTM in decoder LSTM stack
@@ -177,18 +185,18 @@ else
         end
         allModContainer:add(anLSTM)
         dec:add(nn.Sequencer(anLSTM))
+        table.insert(decLSTMs, anLSTM)
     end
     
-    linear = nn.Linear(opt.hiddenSize, opt.vocabSize)
-    dec:add(nn.Sequencer(linear))
+    dec:add(nn.Sequencer(nn.Linear(opt.hiddenSize, opt.vocabSize)))
     allModContainer:add(linear)
     dec:add(nn.Sequencer(nn.LogSoftMax()))
 
     criterion = nn.SequencerCriterion(nn.ClassNLLCriterion())
 end
 
-print ('encoder', enc)
-print ('decoder', dec)
+--print ('encoder', enc)
+--print ('decoder', dec)
 
 -- run on gpu if possible
 if opt.gpuid >=0 then
@@ -204,7 +212,7 @@ local splitter = opt.gpuid >= 0 and nn.SplitTable(1,1):cuda() or nn.SplitTable(1
 
 -- cross validation & testing
 -- split_index: pass 2 for validate and 3 for test
-function evalLoss(split_index, enc, encLSTM, dec, decLSTM, criterion)
+function evalLoss(split_index)
     --print('calculating validation loss...')
     n = split_index==2 and nval or ntest
 
@@ -224,7 +232,7 @@ function evalLoss(split_index, enc, encLSTM, dec, decLSTM, criterion)
 
         -- forward
         local encOut = enc:forward(encInSeq)
-        forwardConnect(encLSTM, decLSTM)
+        forwardConnect(encLSTMs, decLSTMs)
         local decOut = dec:forward(decInSeq)
         local err = criterion:forward(decOut, decOutSeq)
 
@@ -258,14 +266,14 @@ function feval(x)
 
 --  forward pass
     local encOut = enc:forward(encInSeq)
-    forwardConnect(encLSTM, decLSTM)
+    forwardConnect(encLSTMs, decLSTMs)
     local decOut = dec:forward(decInSeq)
     local train_loss = criterion:forward(decOut, decOutSeq)
 
 --  backward pass
     local gradOutput = criterion:backward(decOut, decOutSeq)
     dec:backward(decInSeq, gradOutput)
-    backwardConnect(encLSTM, decLSTM)
+    backwardConnect(encLSTMs, decLSTMs)
     local zeroTensor = opt.gpuid >= 0 and torch.CudaTensor(encOut):zero() or torch.Tensor(encOut):zero()
     enc:backward(encInSeq, zeroTensor)
 
@@ -344,9 +352,9 @@ for i = 1, iterations do
         checkpoint.opt = opt
         checkpoint.opt.learningRate = optim_state.learningRate
         checkpoint.enc = enc
-        checkpoint.encLSTM = encLSTM
+        checkpoint.encLSTMs = encLSTMs
         checkpoint.dec = dec
-        checkpoint.decLSTM = decLSTM
+        checkpoint.decLSTMs = decLSTMs
         checkpoint.criterion = criterion
         checkpoint.allModContainer = allModContainer
         checkpoint.i = i

@@ -42,8 +42,12 @@ print('loading ' .. opt.model)
 checkpoint = torch.load(opt.model)
 
 -- convert the networks to be CPU models
-checkpoint.enc = checkpoint.enc:double()
-checkpoint.dec = checkpoint.dec:double()
+
+--checkpoint.enc = checkpoint.enc:double()
+--checkpoint.dec = checkpoint.dec:double()
+--checkpoint.decLSTMs = checkpoint.decLSTMs:double()
+--checkpoint.encLSTMs = checkpoint.encLSTMs:double()
+checkpoint.allModContainer = checkpoint.allModContainer:double()
 checkpoint.criterion = checkpoint.criterion:double()
 
 

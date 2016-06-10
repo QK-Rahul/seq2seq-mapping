@@ -1,33 +1,35 @@
---[[ 
-    -- Synthetic data for following tasks
-    -- task1: repeat each symbol twice. e.g. 1234 -> 11223344
-    -- task2: append last element of the input sequence to itself. e.g. 123 -> 1233
+-- Synthetic data for testing
 
-    -- Alert: ugly code. 
-    -- Excuse: I'm new to lua/torch and in a hurry.
-]]--
+-- configure vocabulary here
+vocab = {'a','b','c','d','e','f','g','h','i'}--,'j','k','l','m','n','o','p','q','r','s','t','u','v','w','x','y','z','1','2','3','4','5','6','7','8','9','0'}
+minSeqLength = 6
+maxSeqLength = 6
+--
 
 local Synthetic = {}
 Synthetic.__index = Synthetic
 
--- helpers to filter out already generated data
+cnt = 0
+generatedBuffer = {}
 
-Buffer = {}
 function alreadyGenerated(new)
-    for _, old in pairs(Buffer) do
-        if #old == #new and torch.all(old:eq(new)) then return true end
+    local abuffer = generatedBuffer[#new]
+    if abuffer == nil then return false end
+    for _, old in pairs(abuffer) do
+        if torch.all(old:eq(new)) then return true end
     end
     return false
 end
 
 function buffer(tensor)
-    --table.insert(Buffer, torch.Tensor(table))
-    Buffer[#Buffer + 1] = tensor
+    -- categorize the buffer on sequence length
+    local index = (#tensor)[1]
+    if generatedBuffer[index] == nil then generatedBuffer[index] = {} end
+    table.insert(generatedBuffer[index], tensor)
+    cnt = cnt + 1
 end
---
+    
 
-
--- task: repeat each symbol twice. e.g. 1234 -> 11223344
 function Synthetic.generate1(vocab_size, minSeqLength, maxSeqLength)
     -- generate parameters for sequence generation randomly
     local seqLen = math.random(minSeqLength, maxSeqLength)
@@ -44,8 +46,10 @@ function Synthetic.generate1(vocab_size, minSeqLength, maxSeqLength)
 
     buffer(encIn)
 
-    decIn[1] = vocab_size-1                 -- GO
-    decOut[2*seqLen+1] = vocab_size         -- EOS
+    if(cnt%5000 == 0) then print('generated', cnt, 'sequences...') end
+
+    decIn[1] = vocab_size-1              -- start symbol
+    decOut[2*seqLen+1] = vocab_size      -- stop symbol
     i = 0
     decIn:sub(2,2*seqLen+1):apply(function()  i = i+1; if i%2 ~= 0 then return encIn[(i+1)/2] else return encIn[i/2] end end)
     i = 0
@@ -53,8 +57,7 @@ function Synthetic.generate1(vocab_size, minSeqLength, maxSeqLength)
     return {encIn, decIn, decOut}
 end
 
-
--- task: append last element of the sequence to the input seq. e.g. 123 -> 1233
+-- task: copy input sequence and repeat the last element e.g. 123 -> 1233
 function Synthetic.generate2(vocab_size, minSeqLength, maxSeqLength)
     -- generate parameters for sequence generation randomly
     local seqLen = math.random(minSeqLength, maxSeqLength)
@@ -71,37 +74,51 @@ function Synthetic.generate2(vocab_size, minSeqLength, maxSeqLength)
 
     buffer(encIn)
 
-    decIn[1] = vocab_size-1            -- GO
+    if(cnt%5000 == 0) then print('generated', cnt, 'sequences...') end
+
+    decIn[1] = vocab_size-1            -- start symbol
     decIn:sub(2,seqLen+1):copy(encIn)
     decIn[seqLen+2] = decIn[seqLen+1]
 
-    decOut[seqLen+2] = vocab_size      -- EOS
+    decOut[seqLen+2] = vocab_size      -- stop symbol
     decOut:sub(1,seqLen):copy(encIn)
     decOut[seqLen+1] = decOut[seqLen]
 
     return {encIn, decIn, decOut}
 end
 
-
 function Synthetic.create(which, dataSize, batch_size, train_frac, val_frac, test_frac)
     local self = {}
     setmetatable(self, Synthetic)
-
     -- required to generate data
-    self.vocab_size = 6
-    self.minSeqLength = 2
-    self.maxSeqLength = 5
+    self.vocab_size = #vocab + 2
+    self.minSeqLength = minSeqLength  
+    self.maxSeqLength = maxSeqLength
     self.vocab_mapping = {}
+    for i,c in ipairs(vocab) do self.vocab_mapping[c] = i end
     generate = which == 1 and self.generate1 or which == 2 and self.generate2
-    fileName = 'synthetic_data-' .. tostring(which) .. '.t7'
+    fileName = 'synthetic_data-' .. tostring(which) .. '_2.t7'
 
     self.ntrain = math.floor(dataSize * train_frac)
     self.nval = math.floor(dataSize * val_frac)
     self.ntest = dataSize - (self.ntrain + self.nval)
 
     for i = 1, self.vocab_size do self.vocab_mapping[tostring(i)] = i end
+    --
+    
+    local dataGenReq    
+    if not path.exists(fileName) then dataGenReq = true
+    else
+        local train_data, val_data, test_data, ntrain, nval, ntest = unpack(torch.load(fileName))
+        if self.ntrain == ntrain and self.nval == nval and self.ntest == ntest then 
+            dataGenReq = false
+            print('Using existing data set...')
+            self.train_data, self.val_data, self.test_data, self.ntrain, self.nval, self.ntest = train_data, val_data, test_data, ntrain, nval, ntest
+        else dataGenReq = true end
+    end
 
-    if not path.exists(fileName) then
+
+    if dataGenReq then
         print('Generating a new data set...')
         self.train_data = {}
         self.val_data = {}
@@ -126,9 +143,6 @@ function Synthetic.create(which, dataSize, batch_size, train_frac, val_frac, tes
         end
                 
         torch.save(fileName, {self.train_data, self.val_data, self.test_data, self.ntrain, self.nval, self.ntest})
-    else
-        print('Using existing data set...')
-        self.train_data, self.val_data, self.test_data, self.ntrain, self.nval, self.ntest = unpack(torch.load(fileName))
     end
 
     self.train_index = 0
@@ -139,7 +153,7 @@ function Synthetic.create(which, dataSize, batch_size, train_frac, val_frac, tes
     self.train_batch = {}
     self.val_batch = {}
     self.test_batch = {}
-    
+
     if self.batch_size > 1 then
         for splitI = 1, 3 do self:createBatches(splitI) end
         self.ntrain, self.nval, self.ntest = #(self.train_batch), #(self.val_batch), #(self.test_batch)
@@ -151,10 +165,10 @@ function Synthetic.create(which, dataSize, batch_size, train_frac, val_frac, tes
 
     print('generated data for task:', which, 'split_size:', self.batch_split_sizes)
     return self
+
 end
 
 
--- summary: it takes similar length sequences and arrange them in batches.
 function Synthetic:createBatches(split_index)
     local n, batch, data
     if split_index == 1 then
@@ -170,12 +184,9 @@ function Synthetic:createBatches(split_index)
     local encSeq, decInSeq, decOutSeq, seqLen
     local encGrouped, decInGrouped, decOutGrouped = {}, {}, {}      --  key:len, value:{seq1,seq2...seqn} where all of seq1 ... seqn are of length = len
     for i=1, n do
-
         encSeq, decInSeq, decOutSeq = unpack(data[i]); seqLen = (#encSeq)[1]
         if encGrouped[seqLen] ~= nil and #(encGrouped[seqLen]) == bs-1 then
-
             table.insert(encGrouped[seqLen], encSeq); table.insert(decInGrouped[seqLen], decInSeq); table.insert(decOutGrouped[seqLen], decOutSeq)
-
             table.insert(batch, {cat(encGrouped[seqLen], 2):t():contiguous(), cat(decInGrouped[seqLen], 2):t():contiguous(), cat(decOutGrouped[seqLen], 2):t():contiguous()} )
             encGrouped[seqLen] = nil; decInGrouped[seqLen] = nil; decOutGrouped[seqLen] = nil
         else
