@@ -14,7 +14,6 @@
 	* using RMSProp, can easily change to another optimization procedure supported by optim package e.g. adam/adagrad for training
 	* saving model at predefined checkpoints and resuming training from saved model
 	* running on nvidia GPU
-	* TODO: sampling from saved model
 	* two Synthetic data sets
 
 * NOTE on using a saved model
@@ -24,6 +23,10 @@
 
         th seq2seq.lua -synthetic 1
         th seq2seq.lua -synthetic 2
+
+* TODO -
+    * sampling from saved model
+    * removing teacher forcing
 
 
 [Element-research/rnn/examples]: <https://github.com/Element-Research/rnn/blob/master/examples/encoder-decoder-coupling.lua>
